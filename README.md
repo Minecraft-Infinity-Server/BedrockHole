@@ -4,6 +4,51 @@
 
 ------
 
+## Getting Started
+
+Setting up **BedrockHole** is straightforward. Follow these steps to get your server punched through the NAT and onto the internet.
+
+------
+
+### 1. Configuration
+
+Before running the application, you need to configure your environment. Create a file named `config.json` and place it in the same directory as the `bedrock-hole` binary.
+
+> **Note:** Ensure your router supports **NAT1 (Full Cone NAT)** for the STUN traversal to work correctly.
+
+### 2. Execution
+
+Open your terminal, navigate to the folder containing the binary, and execute the following command:
+
+```bash
+# On Linux or macOS
+chmod +x bedrock-hole
+./bedrock-hole
+# On Windows
+bedrock-hole.exe
+```
+
+### 3. Verification
+
+Once executed, monitor the console output. You should see logs indicating the service initialization, STUN detection, and DNS synchronization.
+
+**Successful startup example:**
+
+Plaintext
+
+```
+2026-01-29 12:17:11.410766  INFO bedrock_hole: Starting Bedrock-Hole core services...
+2026-01-29 12:17:11.410838  INFO bedrock_hole::stun: Register stun worker.
+2026-01-29 12:17:11.411022  INFO bedrock_hole::stun: Listening on [::]:23333 (IPv6) -> Target: [::1]:25565
+2026-01-29 12:17:11.411044  INFO bedrock_hole::stun: Register IPv6 forward worker.
+2026-01-29 12:17:11.768724  INFO bedrock_hole::stun: Detected a change in public network address: 1.1.1.1:57785
+2026-01-29 12:17:11.768893  INFO bedrock_hole::ddns::cloudflare: Starting Cloudflare DNS synchronization domain=example.com sub_domain=v4
+2026-01-29 12:17:13.306958  INFO bedrock_hole::ddns::cloudflare: Cloudflare record synchronization successful action=PATCH rectype=A name=v4.example.com content=1.1.1.1
+2026-01-29 12:17:14.051646  INFO bedrock_hole::ddns::cloudflare: Cloudflare record synchronization successful action=PATCH rectype=SRV name=_minecraft._tcp.v4.example.com content=v4.example.com
+```
+
+If you see the **"Cloudflare record synchronization successful"** message, your server is now accessible via your domain! Players can connect using your configured hostname without needing to worry about the port.
+
 ## 🚀 Key Functionalities
 
 - **STUN Traversal & Hole Punching**: Automatically detects public IP and port mappings in NAT1 environments using the STUN protocol.
