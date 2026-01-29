@@ -1,6 +1,7 @@
 {
     "general": {
         "heartbeat": 10,
+        "keep_alive": true,
         "stun_server_host": "stun.hot-chilli.net",
         "stun_server_port": 3478
     },

@@ -267,7 +267,7 @@ fn stun_loop(config: GeneralConfig, client_port: u16) -> anyhow::Result<()> {
                 }
             }
         };
-        
+
         loop {
             if let Err(e) = async {
                 if reconn {
@@ -308,6 +308,10 @@ fn stun_loop(config: GeneralConfig, client_port: u16) -> anyhow::Result<()> {
                     tracing::info!("Heartbeat packet sent.");
                 }
 
+                if !config.keep_alive {
+                    stream.shutdown().await?;
+                    reconn = true;
+                }
                 tokio::time::sleep(std::time::Duration::from_secs(config.heartbeat as u64)).await;
 
                 Ok::<(), anyhow::Error>(())

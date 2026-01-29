@@ -27,6 +27,7 @@ pub struct ForwardConfig {
 #[derive(Serialize, Deserialize)]
 pub struct GeneralConfig {
     pub heartbeat: u64,
+    pub keep_alive: bool,
     pub stun_server_host: String,
     pub stun_server_port: u16,
 }
