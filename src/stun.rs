@@ -226,6 +226,7 @@ async fn stun_connect(server: SocketAddr, client_port: u16) -> anyhow::Result<Tc
     #[cfg(unix)]
     socket.set_reuseport(true)?;
     socket.set_nodelay(true)?;
+    socket.set_keepalive(true)?;
 
     let local_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), client_port);
     socket.bind(local_addr)?;
@@ -239,6 +240,7 @@ async fn stun_connect(server: SocketAddr, client_port: u16) -> anyhow::Result<Tc
 fn stun_loop(config: GeneralConfig, client_port: u16) -> anyhow::Result<()> {
     tokio::spawn(async move {
         let mut last_addr: Option<SocketAddr> = None;
+        let mut reconn = false;
         let server_addr = loop {
             match lookup_host(format!("{}:{}", config.stun_server_host, config.stun_server_port)).await {
                 Ok(mut addrs) => {
@@ -252,10 +254,26 @@ fn stun_loop(config: GeneralConfig, client_port: u16) -> anyhow::Result<()> {
         };
 
         tracing::info!("Register stun worker.");
+        
+        let mut stream = loop {
+            match stun_connect(server_addr, client_port).await {
+                Ok(s) => {
+                    tracing::info!("Successfully connected to STUN server.");
+                    break s;
+                },
+                Err(e) => {
+                    tracing::error!("Failed to connect to STUN server: {}, retrying in 5s...", e);
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }
+        };
+        
         loop {
             if let Err(e) = async {
-                let mut stream = stun_connect(server_addr, client_port).await?;
-
+                if reconn {
+                    stream = stun_connect(server_addr, client_port).await?;
+                    reconn = false;
+                }
                 let mut request = [0u8; 20];
                 request[0..2].copy_from_slice(&0x0001u16.to_be_bytes());
                 request[4..8].copy_from_slice(&0x2112A442u32.to_be_bytes());
@@ -290,13 +308,13 @@ fn stun_loop(config: GeneralConfig, client_port: u16) -> anyhow::Result<()> {
                     tracing::info!("Heartbeat packet sent.");
                 }
 
-                stream.shutdown().await?;
                 tokio::time::sleep(std::time::Duration::from_secs(config.heartbeat as u64)).await;
 
                 Ok::<(), anyhow::Error>(())
             }
             .await
             {
+                reconn = true;
                 tracing::error!("{:?}", e);
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
