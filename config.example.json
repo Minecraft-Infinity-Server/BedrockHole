@@ -1,0 +1,19 @@
+{
+    "general": {
+        "heartbeat": 30,
+        "stun_server_host": "stun.hot-chilli.net",
+        "stun_server_port": 3478
+    },
+    "ddns": {
+        "provider": "cloudflare",
+        "token": "example",
+        "domain": "example.com",
+        "sub_domain": "example"
+    },
+    "forward": {
+        "local_port": 25566,
+        "server_host": "server-host",
+        "server_port": 25565,
+        "haproxy_support": true
+    }
+}
