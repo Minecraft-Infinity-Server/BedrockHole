@@ -74,6 +74,8 @@ jobs:
   create-release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Download all artifacts
@@ -83,12 +85,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            BedrockHole-linux-x64/bedrock-hole
-            BedrockHole-linux-arm64/bedrock-hole
-            BedrockHole-macos-arm64/bedrock-hole
-            BedrockHole-macos-x64/bedrock-hole
-            BedrockHole-windows-x64/bedrock-hole.exe
-            BedrockHole-windows-arm64/bedrock-hole.exe
+            **/bedrock-hole
+            **/bedrock-hole.exe
           draft: false
           prerelease: false
         env:
