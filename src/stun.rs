@@ -239,27 +239,23 @@ async fn stun_connect(server: SocketAddr, client_port: u16) -> anyhow::Result<Tc
 fn stun_loop(config: GeneralConfig, client_port: u16) -> anyhow::Result<()> {
     tokio::spawn(async move {
         let mut last_addr: Option<SocketAddr> = None;
-        let mut reconn = false;
-        let server_addr = lookup_host(format!(
-            "{}:{}",
-            config.stun_server_host, config.stun_server_port
-        ))
-        .await?
-        .filter(|ip| ip.is_ipv4())
-        .next()
-        .ok_or_else(|| {
-            tracing::error!("Unable to find a valid IPv4 address.");
+        let server_addr = loop {
+            match lookup_host(format!("{}:{}", config.stun_server_host, config.stun_server_port)).await {
+                Ok(mut addrs) => {
+                    if let Some(addr) = addrs.find(|ip| ip.is_ipv4()) {
+                        break addr;
+                    }
+                }
+                Err(e) => tracing::warn!("DNS lookup failed: {}, retrying...", e),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        };
 
-            std::process::exit(1);
-        })?;
-
-        let mut stream = stun_connect(server_addr, client_port).await?;
+        tracing::info!("Register stun worker.");
         loop {
             if let Err(e) = async {
-                if reconn {
-                    stream = stun_connect(server_addr, client_port).await?;
-                    reconn = false;
-                }
+                let mut stream = stun_connect(server_addr, client_port).await?;
+
                 let mut request = [0u8; 20];
                 request[0..2].copy_from_slice(&0x0001u16.to_be_bytes());
                 request[4..8].copy_from_slice(&0x2112A442u32.to_be_bytes());
@@ -294,14 +290,14 @@ fn stun_loop(config: GeneralConfig, client_port: u16) -> anyhow::Result<()> {
                     tracing::info!("Heartbeat packet sent.");
                 }
 
+                stream.shutdown().await?;
                 tokio::time::sleep(std::time::Duration::from_secs(config.heartbeat as u64)).await;
 
                 Ok::<(), anyhow::Error>(())
             }
             .await
             {
-                reconn = true;
-                tracing::error!("{}", e);
+                tracing::error!("{:?}", e);
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
         }
@@ -310,7 +306,6 @@ fn stun_loop(config: GeneralConfig, client_port: u16) -> anyhow::Result<()> {
         Ok::<(), anyhow::Error>(())
     });
 
-    tracing::info!("Register stun worker.");
     Ok(())
 }
 
