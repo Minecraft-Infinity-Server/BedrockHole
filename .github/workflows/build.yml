@@ -91,12 +91,16 @@ jobs:
           for dir in BedrockHole-*; do
             echo "Processing $dir"
 
-            BIN=""
-            if ls "$dir"/*.exe >/dev/null 2>&1; then
-              BIN=$(ls "$dir"/*.exe)
+            BIN=$(find "$dir" -type f \( -name "bedrock-hole" -o -name "bedrock-hole.exe" \) | head -n 1)
+
+            if [ -z "$BIN" ]; then
+              echo "No binary found in $dir"
+              exit 1
+            fi
+
+            if [[ "$BIN" == *.exe ]]; then
               EXT="zip"
             else
-              BIN=$(ls "$dir"/bedrock-hole)
               EXT="tar.gz"
             fi
 
@@ -104,9 +108,9 @@ jobs:
             OUT="release-assets/${NAME}.${EXT}"
 
             if [ "$EXT" = "zip" ]; then
-              (cd "$dir" && zip -9 "../$OUT" "$(basename "$BIN")" config.json)
+              zip -9 "$OUT" "$BIN" "$dir/config.json"
             else
-              (cd "$dir" && tar czf "../$OUT" "$(basename "$BIN")" config.json)
+              tar czf "$OUT" "$BIN" "$dir/config.json"
             fi
           done
 
