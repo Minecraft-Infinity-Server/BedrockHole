@@ -58,5 +58,5 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}
           path: |
-            target/${{ matrix.target }}/release/BedrockHole
+            target/${{ matrix.target }}/release/bedrock-hole
             config.json
