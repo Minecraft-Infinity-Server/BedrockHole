@@ -25,7 +25,7 @@ Open your terminal, navigate to the folder containing the binary, and execute th
 chmod +x bedrock-hole
 ./bedrock-hole
 # On Windows
-bedrock-hole.exe
+.\bedrock-hole.exe
 ```
 
 ### 3. Verification
@@ -34,9 +34,7 @@ Once executed, monitor the console output. You should see logs indicating the se
 
 **Successful startup example:**
 
-Plaintext
-
-```
+```Plaintext
 2026-01-29 12:17:11.410766  INFO bedrock_hole: Starting Bedrock-Hole core services...
 2026-01-29 12:17:11.410838  INFO bedrock_hole::stun: Register stun worker.
 2026-01-29 12:17:11.411022  INFO bedrock_hole::stun: Listening on [::]:23333 (IPv6) -> Target: [::1]:25565
