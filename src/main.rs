@@ -1,4 +1,5 @@
-use chrono::Local;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use tracing_subscriber::fmt::{format::Writer, time::FormatTime};
 
 mod config;
@@ -9,7 +10,11 @@ struct LocalTime;
 
 impl FormatTime for LocalTime {
     fn format_time(&self, w: &mut Writer<'_>) -> std::fmt::Result {
-        write!(w, "{}", Local::now().format("%Y-%m-%d %H:%M:%S%.6f"))
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+
+        write!(w, "{}.{:06}", now.as_secs(), now.subsec_micros())
     }
 }
 

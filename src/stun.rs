@@ -141,6 +141,7 @@ async fn register_listener(config: ForwardConfig) -> anyhow::Result<()> {
         socket.set_reuseaddr(true)?;
         #[cfg(unix)]
         socket.set_reuseport(true)?;
+        socket.set_nodelay(true)?;
         socket.bind(local_addr)?;
         let listener = socket.listen(1024)?;
 
@@ -168,6 +169,7 @@ async fn register_listener(config: ForwardConfig) -> anyhow::Result<()> {
         socket.set_reuseaddr(true)?;
         #[cfg(unix)]
         socket.set_reuseport(true)?;
+        socket.set_nodelay(true)?;
         socket.bind(local_addr)?;
         let listener = socket.listen(1024)?;
 
@@ -230,9 +232,6 @@ async fn stun_connect(server: SocketAddr, client_port: u16) -> anyhow::Result<Tc
 
     let stream =
         tokio::time::timeout(std::time::Duration::from_secs(3), socket.connect(server)).await??;
-
-    let actual_local = stream.local_addr()?;
-    tracing::info!("Local socket bound to: {}", actual_local);
 
     Ok(stream)
 }
