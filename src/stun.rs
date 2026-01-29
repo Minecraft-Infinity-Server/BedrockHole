@@ -1,9 +1,9 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use anyhow::anyhow;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
-    net::{TcpSocket, TcpStream, lookup_host},
+    net::{TcpListener, TcpSocket, TcpStream, lookup_host},
 };
 
 use crate::{
@@ -99,32 +99,20 @@ async fn forward_v2(
     Ok(())
 }
 
-async fn register_listener(config: ForwardConfig) -> anyhow::Result<()> {
-    let socket = TcpSocket::new_v4()?;
-    socket.set_reuseaddr(true)?;
-    #[cfg(unix)]
-    socket.set_reuseport(true)?;
-    socket.set_nodelay(true)?;
-
-    let local_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), config.local_port);
-    socket.bind(local_addr)?;
-
-    tracing::info!("Bind addr: {}:{}", local_addr.ip(), local_addr.port());
-    let listener = socket.listen(1024)?;
-
-    let server_addr: SocketAddr =
-        format!("{}:{}", config.server_host, config.server_port).parse()?;
-
-    tracing::info!("Register forward worker.");
+async fn listener_handle(
+    listener: TcpListener,
+    server_addr: SocketAddr,
+    haproxy: bool,
+    protocol: &str,
+) {
+    tracing::info!("Register {} forward worker.", protocol);
     loop {
         match listener.accept().await {
             Ok((client_stream, addr)) => {
                 tracing::info!("New connection from: {}", addr);
 
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        forward(client_stream, server_addr, config.haproxy_support).await
-                    {
+                    if let Err(e) = forward(client_stream, server_addr, haproxy).await {
                         tracing::error!("Proxy session error: {}", e);
                     }
                 });
@@ -136,6 +124,62 @@ async fn register_listener(config: ForwardConfig) -> anyhow::Result<()> {
             }
         }
     }
+}
+
+async fn register_listener(config: ForwardConfig) -> anyhow::Result<()> {
+    let host_with_port = format!("{}:{}", config.server_host, config.server_port);
+
+    let ipv6_res = async {
+        let mut server_addr = lookup_host(&host_with_port)
+            .await?
+            .find(|addr| addr.is_ipv6())
+            .ok_or_else(|| anyhow!("No IPv6 found"))?;
+        server_addr.set_port(config.server_port);
+
+        let socket = TcpSocket::new_v6()?;
+        let local_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), config.local_port);
+        socket.set_reuseaddr(true)?;
+        #[cfg(unix)]
+        socket.set_reuseport(true)?;
+        socket.bind(local_addr)?;
+        let listener = socket.listen(1024)?;
+
+        tracing::info!(
+            "Listening on [::]:{} (IPv6) -> Target: {}",
+            config.local_port,
+            server_addr
+        );
+        listener_handle(listener, server_addr, config.haproxy_support, "IPv6").await;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    if let Err(e) = ipv6_res {
+        tracing::warn!("IPv6 setup failed: {}. Falling back to IPv4...", e);
+
+        let mut server_addr = lookup_host(&host_with_port)
+            .await?
+            .find(|addr| addr.is_ipv4())
+            .ok_or_else(|| anyhow!("No IPv4 found"))?;
+        server_addr.set_port(config.server_port);
+
+        let socket = TcpSocket::new_v4()?;
+        let local_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), config.local_port);
+        socket.set_reuseaddr(true)?;
+        #[cfg(unix)]
+        socket.set_reuseport(true)?;
+        socket.bind(local_addr)?;
+        let listener = socket.listen(1024)?;
+
+        tracing::info!(
+            "Listening on 0.0.0.0:{} (IPv4) -> Target: {}",
+            config.local_port,
+            server_addr
+        );
+        listener_handle(listener, server_addr, config.haproxy_support, "IPv4").await;
+    }
+
+    Ok(())
 }
 
 const STUN_MAGIC_COOKIE: u32 = 0x2112A442;
