@@ -80,13 +80,28 @@ jobs:
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Prepare Assets for Release
+        shell: bash
+        run: |
+          mkdir -p ./release-assets
+          for dir in ./artifacts/*/; do
+            platform=$(basename "$dir")
+            if [ -f "${dir}bedrock-hole" ]; then
+              cp "${dir}bedrock-hole" "./release-assets/bedrock-hole-${platform}"
+            fi
+            if [ -f "${dir}bedrock-hole.exe" ]; then
+              cp "${dir}bedrock-hole.exe" "./release-assets/bedrock-hole-${platform}.exe"
+            fi
+          done
+          ls -R ./release-assets
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            **/bedrock-hole
-            **/bedrock-hole.exe
+          files: ./release-assets/*
           draft: false
           prerelease: false
         env:
