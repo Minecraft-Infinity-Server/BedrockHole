@@ -15,6 +15,7 @@
         "local_port": 25566,
         "server_host": "server-host",
         "server_port": 25565,
-        "haproxy_support": true
+        "haproxy_support": true,
+        "haproxy_version": "v2"
     }
 }

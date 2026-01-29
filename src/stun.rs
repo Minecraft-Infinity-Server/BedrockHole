@@ -7,7 +7,7 @@ use tokio::{
 };
 
 use crate::{
-    config::{ForwardConfig, GeneralConfig},
+    config::{ForwardConfig, GeneralConfig, HAProxyVersion},
     ddns::PROVIDER,
 };
 
@@ -52,7 +52,6 @@ async fn forward(
     Ok(())
 }
 
-#[allow(dead_code)]
 async fn forward_v2(
     mut client_stream: TcpStream,
     server: SocketAddr,
@@ -103,6 +102,7 @@ async fn listener_handle(
     listener: TcpListener,
     server_addr: SocketAddr,
     haproxy: bool,
+    haproxy_version: HAProxyVersion,
     protocol: &str,
 ) {
     tracing::info!("Register {} forward worker.", protocol);
@@ -112,7 +112,16 @@ async fn listener_handle(
                 tracing::info!("New connection from: {}", addr);
 
                 tokio::spawn(async move {
-                    if let Err(e) = forward(client_stream, server_addr, haproxy).await {
+                    if let Err(e) = {
+                        match haproxy_version {
+                            HAProxyVersion::V1 => {
+                                forward(client_stream, server_addr, haproxy).await
+                            }
+                            HAProxyVersion::V2 => {
+                                forward_v2(client_stream, server_addr, haproxy).await
+                            }
+                        }
+                    } {
                         tracing::error!("Proxy session error: {}", e);
                     }
                 });
@@ -150,7 +159,14 @@ async fn register_listener(config: ForwardConfig) -> anyhow::Result<()> {
             config.local_port,
             server_addr
         );
-        listener_handle(listener, server_addr, config.haproxy_support, "IPv6").await;
+        listener_handle(
+            listener,
+            server_addr,
+            config.haproxy_support,
+            config.haproxy_version,
+            "IPv6",
+        )
+        .await;
         Ok::<(), anyhow::Error>(())
     }
     .await;
@@ -178,7 +194,14 @@ async fn register_listener(config: ForwardConfig) -> anyhow::Result<()> {
             config.local_port,
             server_addr
         );
-        listener_handle(listener, server_addr, config.haproxy_support, "IPv4").await;
+        listener_handle(
+            listener,
+            server_addr,
+            config.haproxy_support,
+            config.haproxy_version,
+            "IPv4",
+        )
+        .await;
     }
 
     Ok(())
@@ -242,7 +265,12 @@ fn stun_loop(config: GeneralConfig, client_port: u16) -> anyhow::Result<()> {
         let mut last_addr: Option<SocketAddr> = None;
         let mut reconn = false;
         let server_addr = loop {
-            match lookup_host(format!("{}:{}", config.stun_server_host, config.stun_server_port)).await {
+            match lookup_host(format!(
+                "{}:{}",
+                config.stun_server_host, config.stun_server_port
+            ))
+            .await
+            {
                 Ok(mut addrs) => {
                     if let Some(addr) = addrs.find(|ip| ip.is_ipv4()) {
                         break addr;
@@ -254,13 +282,13 @@ fn stun_loop(config: GeneralConfig, client_port: u16) -> anyhow::Result<()> {
         };
 
         tracing::info!("Register stun worker.");
-        
+
         let mut stream = loop {
             match stun_connect(server_addr, client_port).await {
                 Ok(s) => {
                     tracing::info!("Successfully connected to STUN server.");
                     break s;
-                },
+                }
                 Err(e) => {
                     tracing::error!("Failed to connect to STUN server: {}, retrying in 5s...", e);
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;

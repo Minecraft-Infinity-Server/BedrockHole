@@ -8,6 +8,13 @@ pub enum DDNSProvider {
     Cloudflare,
 }
 
+#[derive(Serialize, Deserialize, Copy, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum HAProxyVersion {
+    V1,
+    V2
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct DDNSConfig {
     pub provider: DDNSProvider,
@@ -22,6 +29,7 @@ pub struct ForwardConfig {
     pub server_host: String,
     pub server_port: u16,
     pub haproxy_support: bool,
+    pub haproxy_version: HAProxyVersion
 }
 
 #[derive(Serialize, Deserialize)]
