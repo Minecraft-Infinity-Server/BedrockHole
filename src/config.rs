@@ -32,10 +32,9 @@ pub struct ForwardConfig {
     pub haproxy_version: HAProxyVersion,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct GeneralConfig {
     pub heartbeat: u64,
-    pub keep_alive: bool,
     pub stun_server_host: String,
     pub stun_server_port: u16,
 }

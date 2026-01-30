@@ -1,211 +1,12 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use anyhow::anyhow;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
-    net::{TcpListener, TcpSocket, TcpStream, lookup_host},
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpSocket, TcpStream, lookup_host},
 };
 
-use crate::{
-    config::{ForwardConfig, GeneralConfig, HAProxyVersion},
-    ddns::PROVIDER,
-};
-
-async fn forward(
-    mut client_stream: TcpStream,
-    server: SocketAddr,
-    haproxy: bool,
-) -> anyhow::Result<()> {
-    let mut server_stream = TcpStream::connect(server).await?;
-
-    if haproxy {
-        let client_addr = client_stream.peer_addr()?;
-        let server_local_addr = server_stream.local_addr()?;
-
-        let header = match (client_addr, server_local_addr) {
-            (SocketAddr::V4(src), SocketAddr::V4(dst)) => {
-                format!(
-                    "PROXY TCP4 {} {} {} {}\r\n",
-                    src.ip(),
-                    dst.ip(),
-                    src.port(),
-                    dst.port()
-                )
-            }
-            (SocketAddr::V6(src), SocketAddr::V6(dst)) => {
-                format!(
-                    "PROXY TCP6 {} {} {} {}\r\n",
-                    src.ip(),
-                    dst.ip(),
-                    src.port(),
-                    dst.port()
-                )
-            }
-            _ => return Err(anyhow::anyhow!("Mismatched IP families for PROXY v1")),
-        };
-
-        server_stream.write_all(header.as_bytes()).await?;
-    }
-
-    tokio::io::copy_bidirectional(&mut client_stream, &mut server_stream).await?;
-
-    Ok(())
-}
-
-async fn forward_v2(
-    mut client_stream: TcpStream,
-    server: SocketAddr,
-    haproxy: bool,
-) -> anyhow::Result<()> {
-    let mut server_stream = TcpStream::connect(server).await?;
-
-    if haproxy {
-        let client_addr = client_stream.peer_addr()?;
-        let server_local_addr = server_stream.local_addr()?;
-
-        let signature = [
-            0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A,
-        ];
-
-        let mut header = Vec::with_capacity(64);
-        header.extend_from_slice(&signature);
-
-        match (client_addr, server_local_addr) {
-            (SocketAddr::V4(src), SocketAddr::V4(dst)) => {
-                header.extend_from_slice(&[0x21, 0x11]);
-                header.extend_from_slice(&12u16.to_be_bytes());
-                header.extend_from_slice(&src.ip().octets());
-                header.extend_from_slice(&dst.ip().octets());
-                header.extend_from_slice(&src.port().to_be_bytes());
-                header.extend_from_slice(&dst.port().to_be_bytes());
-            }
-            (SocketAddr::V6(src), SocketAddr::V6(dst)) => {
-                header.extend_from_slice(&[0x21, 0x21]);
-                header.extend_from_slice(&36u16.to_be_bytes());
-                header.extend_from_slice(&src.ip().octets());
-                header.extend_from_slice(&dst.ip().octets());
-                header.extend_from_slice(&src.port().to_be_bytes());
-                header.extend_from_slice(&dst.port().to_be_bytes());
-            }
-            _ => return Err(anyhow::anyhow!("Mismatched IP families for PROXY v2")),
-        }
-
-        server_stream.write_all(&header).await?;
-    }
-
-    copy_bidirectional(&mut client_stream, &mut server_stream).await?;
-
-    Ok(())
-}
-
-async fn listener_handle(
-    listener: TcpListener,
-    server_addr: SocketAddr,
-    haproxy: bool,
-    haproxy_version: HAProxyVersion,
-    protocol: &str,
-) {
-    tracing::info!("Register {} forward worker.", protocol);
-    loop {
-        match listener.accept().await {
-            Ok((client_stream, addr)) => {
-                tracing::info!("New connection from: {}", addr);
-
-                tokio::spawn(async move {
-                    if let Err(e) = {
-                        match haproxy_version {
-                            HAProxyVersion::V1 => {
-                                forward(client_stream, server_addr, haproxy).await
-                            }
-                            HAProxyVersion::V2 => {
-                                forward_v2(client_stream, server_addr, haproxy).await
-                            }
-                        }
-                    } {
-                        tracing::error!("Proxy session error: {}", e);
-                    }
-                });
-            }
-            Err(e) => {
-                tracing::error!("Accept failed: {}", e);
-
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-        }
-    }
-}
-
-async fn register_listener(config: ForwardConfig) -> anyhow::Result<()> {
-    let host_with_port = format!("{}:{}", config.server_host, config.server_port);
-
-    let ipv6_res = async {
-        let mut server_addr = lookup_host(&host_with_port)
-            .await?
-            .find(|addr| addr.is_ipv6())
-            .ok_or_else(|| anyhow!("No IPv6 found"))?;
-        server_addr.set_port(config.server_port);
-
-        let socket = TcpSocket::new_v6()?;
-        let local_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), config.local_port);
-        socket.set_reuseaddr(true)?;
-        #[cfg(unix)]
-        socket.set_reuseport(true)?;
-        socket.set_nodelay(true)?;
-        socket.bind(local_addr)?;
-        let listener = socket.listen(1024)?;
-
-        tracing::info!(
-            "Listening on [::]:{} (IPv6) -> Target: {}",
-            config.local_port,
-            server_addr
-        );
-        listener_handle(
-            listener,
-            server_addr,
-            config.haproxy_support,
-            config.haproxy_version,
-            "IPv6",
-        )
-        .await;
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
-
-    if let Err(e) = ipv6_res {
-        tracing::warn!("IPv6 setup failed: {}. Falling back to IPv4...", e);
-
-        let mut server_addr = lookup_host(&host_with_port)
-            .await?
-            .find(|addr| addr.is_ipv4())
-            .ok_or_else(|| anyhow!("No IPv4 found"))?;
-        server_addr.set_port(config.server_port);
-
-        let socket = TcpSocket::new_v4()?;
-        let local_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), config.local_port);
-        socket.set_reuseaddr(true)?;
-        #[cfg(unix)]
-        socket.set_reuseport(true)?;
-        socket.set_nodelay(true)?;
-        socket.bind(local_addr)?;
-        let listener = socket.listen(1024)?;
-
-        tracing::info!(
-            "Listening on 0.0.0.0:{} (IPv4) -> Target: {}",
-            config.local_port,
-            server_addr
-        );
-        listener_handle(
-            listener,
-            server_addr,
-            config.haproxy_support,
-            config.haproxy_version,
-            "IPv4",
-        )
-        .await;
-    }
-
-    Ok(())
-}
+use crate::{config::GeneralConfig, ddns::PROVIDER};
 
 const STUN_MAGIC_COOKIE: u32 = 0x2112A442;
 const ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
@@ -260,107 +61,171 @@ async fn stun_connect(server: SocketAddr, client_port: u16) -> anyhow::Result<Tc
     Ok(stream)
 }
 
-fn stun_loop(config: GeneralConfig, client_port: u16) -> anyhow::Result<()> {
-    tokio::spawn(async move {
-        let mut last_addr: Option<SocketAddr> = None;
-        let mut reconn = false;
-        let server_addr = loop {
-            match lookup_host(format!(
-                "{}:{}",
-                config.stun_server_host, config.stun_server_port
-            ))
-            .await
-            {
-                Ok(mut addrs) => {
-                    if let Some(addr) = addrs.find(|ip| ip.is_ipv4()) {
-                        break addr;
-                    }
-                }
-                Err(e) => tracing::warn!("DNS lookup failed: {}, retrying...", e),
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        };
-
-        tracing::info!("Register stun worker.");
-
-        let mut stream = loop {
-            match stun_connect(server_addr, client_port).await {
-                Ok(s) => {
-                    tracing::info!("Successfully connected to STUN server.");
-                    break s;
-                }
-                Err(e) => {
-                    tracing::error!("Failed to connect to STUN server: {}, retrying in 5s...", e);
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+async fn get_addr(config: GeneralConfig, local_port: u16) -> anyhow::Result<SocketAddr> {
+    let server_addr = loop {
+        match lookup_host(format!(
+            "{}:{}",
+            config.stun_server_host, config.stun_server_port
+        ))
+        .await
+        {
+            Ok(mut addrs) => {
+                if let Some(addr) = addrs.find(|ip| ip.is_ipv4()) {
+                    break addr;
                 }
             }
-        };
+            Err(e) => tracing::warn!("DNS lookup failed: {}, retrying...", e),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    };
 
-        loop {
-            if let Err(e) = async {
-                if reconn {
-                    stream = stun_connect(server_addr, client_port).await?;
-                    reconn = false;
-                }
-                let mut request = [0u8; 20];
-                request[0..2].copy_from_slice(&0x0001u16.to_be_bytes());
-                request[4..8].copy_from_slice(&0x2112A442u32.to_be_bytes());
-                request[8..20].copy_from_slice(&[0xAA; 12]);
+    tracing::info!("Register stun worker.");
 
-                stream.write_all(&request).await?;
-
-                let mut response = [0u8; 1024];
-                let _ = stream.read(&mut response).await?;
-
-                let addr = parse_addr(&response)?;
-
-                if Some(addr) != last_addr {
-                    let host = addr.ip();
-                    let port = addr.port();
-                    tracing::info!(
-                        "Detected a change in public network addresss: {}:{}",
-                        host,
-                        port
-                    );
-                    if let Err(e) = PROVIDER
-                        .get()
-                        .unwrap()
-                        .update_srv(&host.to_string(), port)
-                        .await
-                    {
-                        tracing::error!("An error occurred while updating the SRV record: {}.", e);
-                    } else {
-                        last_addr = Some(addr);
-                    }
-                } else {
-                    tracing::info!("Heartbeat packet sent.");
-                }
-
-                if !config.keep_alive {
-                    stream.shutdown().await?;
-                    reconn = true;
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(config.heartbeat as u64)).await;
-
-                Ok::<(), anyhow::Error>(())
+    let mut stream = loop {
+        match stun_connect(server_addr, local_port).await {
+            Ok(s) => {
+                tracing::info!("Successfully connected to STUN server.");
+                break s;
             }
-            .await
-            {
-                reconn = true;
-                tracing::error!("{:?}", e);
+            Err(e) => {
+                tracing::error!("Failed to connect to STUN server: {}, retrying in 5s...", e);
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
         }
+    };
 
-        #[allow(unused)]
-        Ok::<(), anyhow::Error>(())
-    });
+    let mut request = [0u8; 20];
+    request[0..2].copy_from_slice(&0x0001u16.to_be_bytes());
+    request[4..8].copy_from_slice(&0x2112A442u32.to_be_bytes());
+    request[8..20].copy_from_slice(&[0xAA; 12]);
 
-    Ok(())
+    stream.write_all(&request).await?;
+
+    let mut response = [0u8; 1024];
+    let _ = stream.read(&mut response).await?;
+
+    let addr = parse_addr(&response)?;
+    let host = addr.ip();
+    let port = addr.port();
+
+    tracing::info!("Public addr: {}", addr);
+
+    loop {
+        match PROVIDER
+            .get()
+            .unwrap()
+            .update_srv(&host.to_string(), port)
+            .await
+        {
+            Ok(()) => break,
+            Err(e) => {
+                tracing::error!(
+                    "An error occurred while updating the SRV record: {}, retrying in 5s...",
+                    e
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        }
+    }
+
+    Ok(addr)
 }
 
-pub async fn run(general: GeneralConfig, forward: ForwardConfig) -> anyhow::Result<()> {
-    stun_loop(general, forward.local_port)?;
-    register_listener(forward).await?;
-    Ok(())
+async fn heartbeat_loop(addr: SocketAddr, heartbeat: u64) {
+    async fn conn(addr: SocketAddr) -> anyhow::Result<TcpStream> {
+        let socket = TcpSocket::new_v4()?;
+        socket.set_keepalive(true)?;
+
+        let stream = socket.connect(addr).await?;
+
+        Ok(stream)
+    }
+    let mut stream = loop {
+        match conn(addr).await {
+            Ok(s) => {
+                tracing::info!("Successfully connected to heartbeat server.");
+                break s;
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to connect to heartbeat server: {}, retrying in 5s...",
+                    e
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        }
+    };
+    let timeout = std::time::Duration::from_secs(heartbeat);
+
+    let data = b"hbpk";
+    let expected_resp = b"hbre";
+
+    loop {
+        let res: anyhow::Result<()> = async {
+            stream.write_all(data).await?;
+
+            let mut buf = [0u8; 64];
+            let n = stream.read(&mut buf).await?;
+
+            if n == 0 {
+                return Err(anyhow::anyhow!("Connection closed by remote peer"));
+            }
+
+            if n < expected_resp.len() || &buf[..expected_resp.len()] != expected_resp {
+                return Err(anyhow::anyhow!(
+                    "Invalid heartbeat response: {:?}",
+                    &buf[..n]
+                ));
+            }
+
+            tracing::info!("Heartbeat packet sent.");
+            tokio::time::sleep(timeout).await;
+
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        if let Err(e) = res {
+            tracing::error!("Heartbeat error: {}. Retrying in 5s...", e);
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            break;
+        }
+    }
+}
+
+pub async fn run(config: GeneralConfig, local_port: u16) -> SocketAddr {
+    let config_cloned = config.clone();
+    let heartbeat = config.heartbeat;
+    let mut wan_addr = get_addr(config, local_port).await.unwrap_or_else(|e| {
+        tracing::error!("{:?}", e);
+
+        std::process::exit(1);
+    });
+
+    let ret_addr = wan_addr.clone();
+    tokio::spawn(async move {
+        let mut retries = 0;
+        loop {
+            if retries >= 3 {
+                match get_addr(config_cloned.clone(), local_port).await {
+                    Ok(new_addr) => {
+                        wan_addr = new_addr;
+                        retries = 0;
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to re-fetch WAN address: {}, retrying in 10s...",
+                            e
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                        continue;
+                    }
+                }
+            }
+            heartbeat_loop(wan_addr, heartbeat).await;
+            retries += 1;
+        }
+    });
+
+    ret_addr
 }

@@ -3,6 +3,7 @@ use tracing_subscriber::fmt::{format::Writer, time::FormatTime};
 
 mod config;
 mod ddns;
+mod forward;
 mod stun;
 
 struct LocalTime;
@@ -29,8 +30,12 @@ async fn main() {
 
     tracing::info!("Starting Bedrock-Hole core services...");
 
-    if let Err(e) = stun::run(config.general, config.forward).await {
-        tracing::error!(error = %e, "Core service execution failed");
-        std::process::exit(1);
-    }
+    let wan_addr = stun::run(config.general, config.forward.local_port).await;
+
+    forward::run(config.forward, wan_addr.ip())
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "Core service execution failed");
+            std::process::exit(1);
+        });
 }
