@@ -1,4 +1,7 @@
+use std::net::SocketAddr;
+
 use chrono::Local;
+use tokio::sync::{OnceCell, RwLock};
 use tracing_subscriber::fmt::{format::Writer, time::FormatTime};
 
 mod config;
@@ -14,9 +17,14 @@ impl FormatTime for LocalTime {
     }
 }
 
+pub static WAN_ADDR: OnceCell<RwLock<SocketAddr>> = OnceCell::const_new();
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().with_timer(LocalTime).init();
+    WAN_ADDR
+        .set(RwLock::new(format!("0.0.0.0:0").parse().unwrap()))
+        .unwrap();
 
     let config = config::BHConfig::_default_load().unwrap_or_else(|e| {
         tracing::error!(error = %e, "Failed to load configuration file");
@@ -30,12 +38,10 @@ async fn main() {
 
     tracing::info!("Starting Bedrock-Hole core services...");
 
-    let wan_addr = stun::run(config.general, config.forward.local_port).await;
+    stun::run(config.general, config.forward.local_port).await;
 
-    forward::run(config.forward, wan_addr.ip())
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "Core service execution failed");
-            std::process::exit(1);
-        });
+    forward::run(config.forward).await.unwrap_or_else(|e| {
+        tracing::error!(error = %e, "Core service execution failed");
+        std::process::exit(1);
+    });
 }

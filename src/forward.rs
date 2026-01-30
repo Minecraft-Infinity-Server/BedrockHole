@@ -6,7 +6,10 @@ use tokio::{
     net::{TcpListener, TcpSocket, TcpStream, lookup_host},
 };
 
-use crate::config::{ForwardConfig, HAProxyVersion};
+use crate::{
+    WAN_ADDR,
+    config::{ForwardConfig, HAProxyVersion},
+};
 
 async fn forward(
     mut client_stream: TcpStream,
@@ -96,7 +99,6 @@ async fn forward_v2(
 }
 
 async fn listener_handle(
-    wan_host: IpAddr,
     listener: TcpListener,
     server_addr: SocketAddr,
     haproxy: bool,
@@ -108,6 +110,7 @@ async fn listener_handle(
         match listener.accept().await {
             Ok((client_stream, addr)) => {
                 // heartbeat server
+                let wan_host = WAN_ADDR.get().unwrap().read().await.ip();
                 if addr.ip().to_canonical() == wan_host {
                     let mut buf = [0u8; 4];
                     match client_stream.peek(&mut buf).await {
@@ -172,7 +175,7 @@ async fn heartbeat_server(mut stream: TcpStream) {
     }
 }
 
-pub async fn run(config: ForwardConfig, wan_host: IpAddr) -> anyhow::Result<()> {
+pub async fn run(config: ForwardConfig) -> anyhow::Result<()> {
     let host_with_port = format!("{}:{}", config.server_host, config.server_port);
 
     let ipv6_res = async {
@@ -197,7 +200,6 @@ pub async fn run(config: ForwardConfig, wan_host: IpAddr) -> anyhow::Result<()> 
             server_addr
         );
         listener_handle(
-            wan_host,
             listener,
             server_addr,
             config.haproxy_support,
@@ -233,7 +235,6 @@ pub async fn run(config: ForwardConfig, wan_host: IpAddr) -> anyhow::Result<()> 
             server_addr
         );
         listener_handle(
-            wan_host,
             listener,
             server_addr,
             config.haproxy_support,

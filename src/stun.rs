@@ -6,7 +6,7 @@ use tokio::{
     net::{TcpSocket, TcpStream, lookup_host},
 };
 
-use crate::{config::GeneralConfig, ddns::PROVIDER};
+use crate::{WAN_ADDR, config::GeneralConfig, ddns::PROVIDER};
 
 const STUN_MAGIC_COOKIE: u32 = 0x2112A442;
 const ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
@@ -131,41 +131,32 @@ async fn get_addr(config: GeneralConfig, local_port: u16) -> anyhow::Result<Sock
     Ok(addr)
 }
 
-async fn heartbeat_loop(addr: SocketAddr, heartbeat: u64) {
+async fn heartbeat_loop(addr: SocketAddr, heartbeat: u64) -> anyhow::Result<()> {
     async fn conn(addr: SocketAddr) -> anyhow::Result<TcpStream> {
         let socket = TcpSocket::new_v4()?;
         socket.set_keepalive(true)?;
 
-        let stream = socket.connect(addr).await?;
+        let stream =
+            tokio::time::timeout(std::time::Duration::from_secs(5), socket.connect(addr)).await??;
 
         Ok(stream)
     }
-    let mut stream = loop {
-        match conn(addr).await {
-            Ok(s) => {
-                tracing::info!("Successfully connected to heartbeat server.");
-                break s;
-            }
-            Err(e) => {
-                tracing::error!(
-                    "Failed to connect to heartbeat server: {}, retrying in 5s...",
-                    e
-                );
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            }
-        }
-    };
-    let timeout = std::time::Duration::from_secs(heartbeat);
+    let mut stream = conn(addr)
+        .await
+        .map_err(|e| anyhow!("Initial connect failed: {}", e))?;
+    tracing::info!("Successfully connected to heartbeat server.");
 
+    let timeout = std::time::Duration::from_secs(heartbeat);
+    let io_timeout = std::time::Duration::from_secs(5);
     let data = b"hbpk";
     let expected_resp = b"hbre";
 
     loop {
         let res: anyhow::Result<()> = async {
-            stream.write_all(data).await?;
+            tokio::time::timeout(io_timeout, stream.write_all(data)).await??;
 
             let mut buf = [0u8; 64];
-            let n = stream.read(&mut buf).await?;
+            let n = tokio::time::timeout(io_timeout, stream.read(&mut buf)).await??;
 
             if n == 0 {
                 return Err(anyhow::anyhow!("Connection closed by remote peer"));
@@ -188,12 +179,13 @@ async fn heartbeat_loop(addr: SocketAddr, heartbeat: u64) {
         if let Err(e) = res {
             tracing::error!("Heartbeat error: {}. Retrying in 5s...", e);
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            break;
+
+            return Err(e);
         }
     }
 }
 
-pub async fn run(config: GeneralConfig, local_port: u16) -> SocketAddr {
+pub async fn run(config: GeneralConfig, local_port: u16) {
     let config_cloned = config.clone();
     let heartbeat = config.heartbeat;
     let mut wan_addr = get_addr(config, local_port).await.unwrap_or_else(|e| {
@@ -202,7 +194,11 @@ pub async fn run(config: GeneralConfig, local_port: u16) -> SocketAddr {
         std::process::exit(1);
     });
 
-    let ret_addr = wan_addr.clone();
+    {
+        let mut wa = WAN_ADDR.get().unwrap().write().await;
+        *wa = wan_addr;
+    }
+
     tokio::spawn(async move {
         let mut retries = 0;
         loop {
@@ -211,6 +207,13 @@ pub async fn run(config: GeneralConfig, local_port: u16) -> SocketAddr {
                     Ok(new_addr) => {
                         wan_addr = new_addr;
                         retries = 0;
+
+                        {
+                            let mut wa = WAN_ADDR.get().unwrap().write().await;
+                            *wa = wan_addr;
+                        }
+
+                        tracing::info!("Global WAN address synchronized: {}", new_addr);
                     }
                     Err(e) => {
                         tracing::error!(
@@ -222,10 +225,17 @@ pub async fn run(config: GeneralConfig, local_port: u16) -> SocketAddr {
                     }
                 }
             }
-            heartbeat_loop(wan_addr, heartbeat).await;
-            retries += 1;
+            if let Err(e) = heartbeat_loop(wan_addr, heartbeat).await {
+                tracing::error!(
+                    "Heartbeat session ended: {}. Retry count: {}",
+                    e,
+                    retries + 1
+                );
+                retries += 1;
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            } else {
+                retries = 0;
+            }
         }
     });
-
-    ret_addr
 }
